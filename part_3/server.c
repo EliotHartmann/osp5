@@ -1,0 +1,137 @@
+#include <errno.h>
+#include <stdio.h>
+#include <time.h>
+#include <zconf.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/loadavg.h>
+#include <stdbool.h>
+#include <signal.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include "server.h"
+
+struct server_param *server_param;
+
+int sock;
+
+void check_errno(char *strerr) {
+    if (errno) {
+        fprintf(stderr, "%s. Error: %s\n", strerr, strerror(errno));
+        exit(1);
+    }
+}
+
+void set_ids(struct server_param *server_param) {
+    time(&server_param->start_time);
+    server_param->pid = getpid();
+    server_param->uid = getuid();
+    server_param->gid = getgid();
+}
+
+void unlink_socket(){
+    close(sock);
+}
+
+void start_server(int argc, char *argv[]) {
+    server_param = malloc(sizeof(struct server_param));
+    set_ids(server_param);
+    server_signal();
+    printf("Server works.\npid = %ld, uid = %ld, gid = %ld\n", server_param->pid, server_param->uid,
+           server_param->gid);
+
+    errno = 0;
+    sock = socket(AF_UNIX, SOCK_STREAM, 0);
+    check_errno("Cant create a socket");
+
+    struct sockaddr_un *sock_addr = malloc(sizeof(struct sockaddr_un));
+    memset(sock_addr, 0, sizeof(struct sockaddr_un));
+    sock_addr->sun_family = AF_UNIX;
+    strncpy(sock_addr->sun_path, "/tmp/socket5", sizeof(sock_addr->sun_path) - 1);
+    check_errno("Cant define the path");
+    unlink("/tmp/socket5");
+    bind(sock, (const struct sockaddr *) sock_addr, sizeof(struct sockaddr_un));
+    check_errno("Cant bind");
+
+    listen(sock, 0);
+    check_errno("Cant listen");
+
+    while (true) {
+        errno = 0;
+        sleep(1);
+        set_param(server_param);
+        unsigned int size=sizeof(struct sockaddr_un);
+        int client = accept(sock, (struct sockaddr *) sock_addr, &size);
+        write(client, server_param, sizeof(struct server_param));
+        check_errno("Cant write a message");
+        close(client);
+    }
+    unlink_socket();
+}
+
+void set_param(struct server_param *server_param) {
+    time_t now;
+    time(&now);
+    server_param->work_time = now - server_param->start_time;
+    getloadavg(server_param->loadavg, 3);
+}
+
+void set_signal(int sig, void *func) {
+    struct sigaction action;
+    sigset_t *mask = (sigset_t*) malloc(sizeof(sigset_t));
+    action.sa_handler = func;
+    action.sa_flags = 0;
+    action.sa_mask = *mask;
+    sigemptyset(mask);
+    sigaction(sig, &action, NULL);
+    check_errno("Cant create segaction");
+}
+
+
+void server_signal(){
+    errno = 0;
+    set_signal(SIGHUP, print_hup);
+    set_signal(SIGTERM, print_term);
+    set_signal(SIGINT, print_int);
+    set_signal(SIGUSR1, print_usr1);
+    set_signal(SIGUSR2, print_usr2);
+}
+
+void *print_hup() {
+    printf("Server was destroyed by HUP");
+    print_param();
+    unlink_socket();
+    exit(0);
+}
+void *print_term() {
+    printf("Server was destroyed by TERM");
+    print_param();
+    unlink_socket();
+    exit(0);
+}
+void *print_int() {
+    printf("Server was destroyed by INT");
+    print_param();
+    unlink_socket();
+    exit(0);
+}
+void *print_usr1() {
+    printf("Server was destroyed by USR1");
+    print_param();
+    unlink_socket();
+    exit(0);
+}
+
+void *print_usr2() {
+    printf("Server was destroyed by USR2");
+    print_param();
+    unlink_socket();
+    exit(0);
+}
+
+void print_param(){
+    printf("\nwork_time = %ld, 1min = %.2f, 5min = %.2f, 15min = %.2f\n", server_param->work_time,
+           server_param->loadavg[0],
+           server_param->loadavg[1], server_param->loadavg[2]);
+    exit(0);
+}
